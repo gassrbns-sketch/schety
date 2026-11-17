@@ -1,0 +1,54 @@
+{
+  "date": "2026-11-19",
+  "title": "силовая — жим + подтягивания с весом",
+  "note": "Ноги забиты — жим ногами 2 подхода",
+  "exercises": [
+    {
+      "id": "bench",
+      "name": "Жим лёжа",
+      "type": "weight_reps",
+      "rest_s": 180,
+      "note": "Разминка 20×10, 40×5, 60×3, 70×2",
+      "sets": [
+        { "weight": 82.5, "reps": 5, "rir": 2 },
+        { "weight": 82.5, "reps": 5, "rir": 2 },
+        { "weight": 82.5, "reps": 5, "rir": 2 }
+      ]
+    },
+    {
+      "id": "pullup",
+      "name": "Подтягивания",
+      "type": "added_weight_reps",
+      "rest_s": 180,
+      "note": "Строгий прямой хват",
+      "sets": [
+        { "weight": 5, "reps": 4, "rir": 1 },
+        { "weight": 5, "reps": 4, "rir": 1 },
+        { "weight": 5, "reps": 4, "rir": 1 }
+      ]
+    },
+    {
+      "id": "leg_press",
+      "name": "Жим ногами горизонтальный",
+      "type": "weight_reps",
+      "sets": [
+        { "weight": 165, "reps": 12, "rir": 2 },
+        { "weight": 165, "reps": 12, "rir": 2 }
+      ]
+    },
+    {
+      "id": "ext_rotation",
+      "name": "Наружная ротация лёжа",
+      "type": "weight_reps",
+      "per_side": true,
+      "rest_s": 60,
+      "sets": [
+        { "weight": 3, "reps": 15 },
+        { "weight": 3, "reps": 15 }
+      ]
+    },
+    { "id": "bird_dog", "name": "Bird dog", "type": "reps", "per_side": true, "circuit": "core", "rounds": 2, "sets": [{ "reps": 10 }] },
+    { "id": "dead_bug", "name": "Мёртвый жук", "type": "reps", "per_side": true, "circuit": "core", "rounds": 2, "sets": [{ "reps": 10 }] },
+    { "id": "side_plank", "name": "Боковая планка", "type": "time", "circuit": "core", "rounds": 2, "sets": [{ "sec": 30 }] }
+  ]
+}

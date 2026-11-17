@@ -1,0 +1,70 @@
+# Счёты
+
+PWA для записи силовых тренировок на Samsung A54. План кладёт Claude в репозиторий данных `gassrbns-sketch/garmin-data`, факт приложение пишет туда же через GitHub API. Сервера и сборки нет: статические `index.html`, `app.js`, `style.css`, `sw.js`.
+
+ТЗ: https://claude.ai/artifact/WTEGk8ku7UFdWhketmfGj5
+
+## Файлы в репозитории данных
+
+| Путь | Кто пишет | Что |
+| --- | --- | --- |
+| `manual/plans/ГГГГ-ММ-ДД.json` | Claude | план занятия |
+| `manual/sessions/ГГГГ-ММ-ДД.json` | приложение | факт: план + отметки, правки, статус |
+| `manual/workouts.md` | приложение | текстовая запись по «Завершить» в нынешнем формате |
+| `manual/exercises.json` | Claude, приложение дополняет | справочник упражнений (массив) |
+
+## Формат плана (для Claude)
+
+Пример: [`examples/plan-example.json`](examples/plan-example.json).
+
+```json
+{
+  "date": "2026-11-19",
+  "title": "силовая — жим + подтягивания с весом",
+  "note": "общая заметка, показывается плашкой сверху",
+  "exercises": [
+    {
+      "id": "bench",
+      "name": "Жим лёжа",
+      "type": "weight_reps",
+      "rest_s": 180,
+      "note": "Разминка 20×10, 40×5, 60×3, 70×2",
+      "sets": [{ "weight": 82.5, "reps": 5, "rir": 2 }]
+    }
+  ]
+}
+```
+
+- `type`: `weight_reps` (weight, reps, rir), `added_weight_reps` (weight: плюс — доп. вес, минус — ассист; reps, rir), `reps` (reps), `time` (sec).
+- Необязательные поля упражнения: `rest_s` (по умолчанию 120), `note`, `step` (шаг веса для кнопок −/+), `per_side: true`, `side_label` (по умолчанию «на сторону», например «на ногу»).
+- Круговой блок: `"circuit": "core", "rounds": 2` на нескольких упражнениях подряд, в `sets` один подход — он размножится на число кругов. В тексте блок пишется строкой `Кор: bird dog 10/стор, … — 2 круга`.
+- `id` должен совпадать с `id` в `exercises.json`: по нему приложение подставляет прошлый вес и шаг.
+- Если план меняется после начала занятия, факт не трогается: появляется плашка «применить к невыполненным подходам».
+
+## Формат факта
+
+Копия плана с полями `status` (`in_progress` | `done`), `started_at`, `finished_at` (местное время с поясом), `md_header` (заголовок записи в `workouts.md`), `session_note`. У упражнения `origin`: `plan`, `added`, `replaced` (+ `replaces: {id, name}`), `removed` (пропущено, остаётся в файле). У подхода `plan`, `fact`, `done`, `note`.
+
+## Запись в workouts.md
+
+По «Завершить» приложение перечитывает `workouts.md`, дописывает в конец блок `## ГГГГ-ММ-ДД ЧЧ:ММ` и текст в формате бота. Повторная отправка того же занятия заменяет блок с этим заголовком. Строки текста, начинающиеся с `## `, экранируются, как в `garmin_manual.add_workout`.
+
+Проверено по коду бота (`garmin_manual.py`, `garmin_export.publish`): бот только дописывает в конец `workouts.md` и перед push делает `git pull --rebase`, файл целиком не пересобирает. Конфликт возможен только если в одну и ту же минуту дописывают и бот (запись тренировки через Telegram), и приложение; тогда бот сообщит «конфликт с GitHub».
+
+## Установка
+
+1. Создать публичный репозиторий `schety`, залить эти файлы, включить GitHub Pages (Settings → Pages → Deploy from branch → `main` / root). Адрес: `https://gassrbns-sketch.github.io/schety/`.
+2. Выпустить fine-grained token: Settings → Developer settings → Fine-grained tokens. Repository access: только `garmin-data`. Permissions: Contents — Read and write. Срок — на выбор, приложение предупредит за 14 дней.
+3. На A54 открыть адрес в Chrome → ⋮ → «Добавить на главный экран» → «Установить».
+4. В приложении: ⚙ → вставить токен → «Проверить».
+5. Android: Настройки → Приложения → Chrome → Батарея → «Без ограничений».
+
+Обновление приложения: залить новые файлы в `schety` и поменять `CACHE` в `sw.js` (`schety-v2` и т.д.). Телефон подхватит новую версию со второго открытия.
+
+## Локальный запуск
+
+```
+python -m http.server 8000
+```
+
+Открыть `http://localhost:8000/`. Service Worker работает на `localhost` и на HTTPS.
