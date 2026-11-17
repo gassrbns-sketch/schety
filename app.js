@@ -9,7 +9,6 @@ const DEFAULTS = {
   timer: false,
   doneSide: 'left',      // куда сдвигаются сделанные подходы
   sound: true,           // деревянный щелчок костяшек
-  cheer: 'chord',        // звук «все подходы упражнения сделаны»; 'off' — без него
 };
 const PATHS = {
   plans: 'manual/plans',
@@ -853,7 +852,6 @@ function bindRod(s, rod, rerender) {
         for (const k of st.group) e.sets[k].done = st.toDone;
         // Стук костяшек о ряд: по щелчку на каждую, сделанные — ниже и громче.
         sound.clack(st.group.length, st.toDone);
-        if (st.toDone && e.sets.every(x => x.done)) sound.cheer();
         if (st.toDone) {
           startIfNeeded(s);
           if (S.settings.timer) startTimer(e.rest_s || DEFAULT_REST_S);
@@ -951,7 +949,6 @@ function openSetEditor(s, e, k, rerender) {
           startIfNeeded(s);
           if (S.settings.timer) startTimer(e.rest_s || DEFAULT_REST_S);
           sound.click(1, 0.8);
-          if (e.sets.every(x => x.done)) sound.cheer();
         }
       }
       touch(s);
@@ -1143,14 +1140,6 @@ function renderSettings() {
     <div class="row"><input id="s-owner" value="${esc(st.owner)}"><span>/</span><input id="s-repo" value="${esc(st.repo)}"></div>
     <label class="row" style="color:var(--text);margin-top:16px"><input id="s-timer" type="checkbox" style="width:24px;min-height:24px" ${st.timer ? 'checked' : ''}> Таймер отдыха</label>
     <label class="row" style="color:var(--text)"><input id="s-sound" type="checkbox" style="width:24px;min-height:24px" ${st.sound ? 'checked' : ''}> Звук костяшек</label>
-    <label>Звук «все подходы сделаны»</label>
-    <div class="menu">${Object.entries(sound.CHEERS).map(([id, v]) => `
-      <div class="row" style="margin-bottom:6px">
-        <button class="grow cheer-pick ${st.cheer === id ? 'primary' : ''}" data-id="${id}" style="text-align:left">${st.cheer === id ? '✓ ' : ''}${esc(v.name)}</button>
-        <button class="cheer-play" data-id="${id}" aria-label="Прослушать">▶</button>
-      </div>`).join('')}
-      <button class="cheer-pick ${st.cheer === 'off' ? 'primary' : ''}" data-id="off" style="text-align:left">${st.cheer === 'off' ? '✓ ' : ''}Без звука</button>
-    </div>
     <label for="s-side">Сделанные подходы сдвигаются</label>
     <select id="s-side"><option value="left" ${st.doneSide !== 'right' ? 'selected' : ''}>влево (свайп справа налево)</option><option value="right" ${st.doneSide === 'right' ? 'selected' : ''}>вправо (свайп слева направо)</option></select>
     <h2>Неотправленное</h2>
@@ -1170,15 +1159,6 @@ function renderSettings() {
   };
   ['#s-token', '#s-owner', '#s-repo', '#s-timer', '#s-sound', '#s-side'].forEach(id => $(id).onchange = persistField);
   $('#s-sound').addEventListener('change', () => { if (st.sound) sound.clack(3, true); });
-  view.querySelectorAll('.cheer-play').forEach(b => b.onclick = () => sound.cheer(b.dataset.id, 0.05, true));
-  view.querySelectorAll('.cheer-pick').forEach(b => b.onclick = () => {
-    st.cheer = b.dataset.id;
-    saveSettings();
-    if (st.cheer !== 'off') sound.cheer(st.cheer, 0.05, true);
-    const y = scrollY;
-    renderSettings();
-    scrollTo(0, y);
-  });
   $('#s-show').onclick = () => { const t = $('#s-token'); t.type = t.type === 'password' ? 'text' : 'password'; };
   $('#s-sync').onclick = () => { persistField(); syncAll(); };
   $('#s-check').onclick = async () => {
@@ -1273,23 +1253,6 @@ const sound = (() => {
     o.start(t);
     o.stop(t + dur + 0.05);
   }
-  function bell(c, f, t, vol = 0.3, dur = 1.4) {
-    // Колокол: основной тон и негармонические обертоны с быстрым затуханием.
-    [[1, 1], [2.76, 0.45], [5.4, 0.25], [8.93, 0.12]].forEach(([m, v], i) =>
-      tone(c, { f: f * m, t, dur: dur / (1 + i * 0.8), vol: vol * v, a: 0.002 }));
-  }
-  function thud(c, t, vol = 0.9) {
-    tone(c, { f: 160, f2: 45, t, dur: 0.35, vol, a: 0.002 });
-    const n = c.createBufferSource();
-    n.buffer = noise;
-    const hp = c.createBiquadFilter();
-    hp.type = 'highpass';
-    hp.frequency.value = 1500;
-    const g = c.createGain();
-    g.gain.value = vol * 0.5;
-    n.connect(hp).connect(g).connect(out(c));
-    n.start(t);
-  }
   /** Несколько костяшек разом — один плотный удар ряда, а не дробь. */
   function clack(count, toDone) {
     if (count <= 1) return click(toDone ? 1 : 0.7, toDone ? 0.8 : 1);
@@ -1301,56 +1264,7 @@ const sound = (() => {
     click(k * 0.6, toDone ? 0.9 : 1.1, 0.012);
     tone(c, { f: toDone ? 230 : 300, f2: toDone ? 110 : 160, t, dur: 0.14, vol: 0.35 * k, a: 0.002 });
   }
-  const C = { G4: 392, C5: 523.25, E5: 659.25, G5: 783.99, C6: 1046.5, E6: 1318.5, G6: 1568, B5: 987.77, C7: 2093 };
-  const CHEERS = {
-    chord: { name: 'Аккорд', play(c, t) {
-      [C.C5, C.E5, C.G5, C.C6].forEach((f, i) => tone(c, { f, type: 'triangle', t: t + i * 0.07, dur: 0.45, vol: 0.28 }));
-      [C.C5, C.E5, C.G5, C.C6].forEach(f => tone(c, { f, type: 'triangle', t: t + 0.3, dur: 0.9, vol: 0.12, a: 0.02 }));
-    } },
-    bell: { name: 'Колокольчик', play(c, t) {
-      bell(c, C.G5, t, 0.35);
-      bell(c, C.C6, t + 0.14, 0.4, 1.8);
-    } },
-    fanfare: { name: 'Фанфары', play(c, t) {
-      const br = (f, s, d, v = 0.3) => {
-        tone(c, { f, type: 'sawtooth', t: t + s, dur: d, vol: v, a: 0.015, lp: 2200 });
-        tone(c, { f: f * 1.003, type: 'sawtooth', t: t + s, dur: d, vol: v * 0.6, a: 0.015, lp: 2200 });
-      };
-      br(C.G4, 0, 0.11); br(C.G4, 0.13, 0.11); br(C.G4, 0.26, 0.11);
-      br(C.C5, 0.39, 0.7, 0.32); br(C.E5, 0.39, 0.7, 0.18); br(C.G5, 0.39, 0.7, 0.14);
-    } },
-    coins: { name: 'Монеты', play(c, t) {
-      const coin = (s, f1, f2, v) => {
-        tone(c, { f: f1, type: 'square', t: t + s, dur: 0.08, vol: v, a: 0.002, lp: 5000 });
-        tone(c, { f: f2, type: 'square', t: t + s + 0.07, dur: 0.45, vol: v, a: 0.002, lp: 5000 });
-      };
-      coin(0, C.B5, C.E6, 0.16);
-      coin(0.16, C.E6, C.G6 * 1.33, 0.1);
-    } },
-    drum: { name: 'Тук-тук-БУМ', play(c, t) {
-      click(1.2, 0.7, t - c.currentTime);
-      click(1.2, 0.7, t - c.currentTime + 0.14);
-      thud(c, t + 0.3, 1);
-      bell(c, 196, t + 0.3, 0.3, 1.6);
-      bell(c, C.G4, t + 0.3, 0.12, 1.2);
-    } },
-  };
-  /** Ободрение, когда все подходы упражнения сделаны. */
-  function cheer(id = S.settings.cheer, delay = 0.12, force = false) {
-    const v = CHEERS[id];
-    if (!v) return;
-    const c = force ? ensureForce() : ensure();
-    if (!c) return;
-    v.play(c, c.currentTime + delay);
-  }
-  function ensureForce() {
-    const was = S.settings.sound;
-    S.settings.sound = true;
-    const c = ensure();
-    S.settings.sound = was;
-    return c;
-  }
-  return { unlock: ensure, click, clack, cheer, CHEERS };
+  return { unlock: ensure, click, clack };
 })();
 
 let timerEnd = 0, timerTick = null;
