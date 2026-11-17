@@ -8,6 +8,7 @@ const DEFAULTS = {
   token: '',
   timer: false,
   doneSide: 'left',      // куда сдвигаются сделанные подходы
+  sound: true,           // деревянный щелчок костяшек
 };
 const PATHS = {
   plans: 'manual/plans',
@@ -794,6 +795,7 @@ function bindRod(s, rod, rerender) {
     const b = ev.target.closest('.bead');
     if (!b) return;
     const k = +b.dataset.k;
+    sound.unlock();   // браузер разрешает звук только после жеста пользователя
     g = { k, x0: ev.clientX, y0: ev.clientY, t0: Date.now(), id: ev.pointerId, drag: false, cancel: false, long: false, crossed: 0 };
     g.lp = setTimeout(() => { if (g && !g.drag) { g.long = true; openSetEditor(s, e, k, rerender); } }, 550);
   });
@@ -831,7 +833,10 @@ function bindRod(s, rod, rerender) {
       const c0 = geo.pos[g.group[j]] + geo.w / 2, c1 = c0 + shift;
       if ((c0 - geo.W / 2) * (c1 - geo.W / 2) < 0) crossed++;
     });
-    if (crossed > g.crossed && navigator.vibrate) navigator.vibrate(15);
+    if (crossed > g.crossed) {
+      if (navigator.vibrate) navigator.vibrate(15);
+      sound.click(0.5, 1.15);
+    }
     g.crossed = crossed;
     g.shift = shift;
   });
@@ -845,6 +850,8 @@ function bindRod(s, rod, rerender) {
       st.els.forEach(el => el.classList.remove('dragging'));
       if (ev.type !== 'pointercancel' && Math.abs(st.shift || 0) >= Math.min(40, st.travel * 0.35)) {
         for (const k of st.group) e.sets[k].done = st.toDone;
+        // Стук костяшек о ряд: по щелчку на каждую, сделанные — ниже и громче.
+        sound.clack(st.group.length, st.toDone);
         if (st.toDone) {
           startIfNeeded(s);
           if (S.settings.timer) startTimer(e.rest_s || DEFAULT_REST_S);
@@ -1128,6 +1135,7 @@ function renderSettings() {
     <label for="s-repo">Репозиторий данных</label>
     <div class="row"><input id="s-owner" value="${esc(st.owner)}"><span>/</span><input id="s-repo" value="${esc(st.repo)}"></div>
     <label class="row" style="color:var(--text);margin-top:16px"><input id="s-timer" type="checkbox" style="width:24px;min-height:24px" ${st.timer ? 'checked' : ''}> Таймер отдыха</label>
+    <label class="row" style="color:var(--text)"><input id="s-sound" type="checkbox" style="width:24px;min-height:24px" ${st.sound ? 'checked' : ''}> Звук костяшек</label>
     <label for="s-side">Сделанные подходы сдвигаются</label>
     <select id="s-side"><option value="left" ${st.doneSide !== 'right' ? 'selected' : ''}>влево (свайп справа налево)</option><option value="right" ${st.doneSide === 'right' ? 'selected' : ''}>вправо (свайп слева направо)</option></select>
     <h2>Неотправленное</h2>
@@ -1141,10 +1149,12 @@ function renderSettings() {
     st.owner = $('#s-owner').value.trim() || DEFAULTS.owner;
     st.repo = $('#s-repo').value.trim() || DEFAULTS.repo;
     st.timer = $('#s-timer').checked;
+    st.sound = $('#s-sound').checked;
     st.doneSide = $('#s-side').value;
     saveSettings();
   };
-  ['#s-token', '#s-owner', '#s-repo', '#s-timer', '#s-side'].forEach(id => $(id).onchange = persistField);
+  ['#s-token', '#s-owner', '#s-repo', '#s-timer', '#s-sound', '#s-side'].forEach(id => $(id).onchange = persistField);
+  $('#s-sound').addEventListener('change', () => { if (st.sound) sound.clack(3, true); });
   $('#s-show').onclick = () => { const t = $('#s-token'); t.type = t.type === 'password' ? 'text' : 'password'; };
   $('#s-sync').onclick = () => { persistField(); syncAll(); };
   $('#s-check').onclick = async () => {
@@ -1165,6 +1175,58 @@ function renderSettings() {
 }
 
 /* ---------- таймер отдыха и экран ---------- */
+
+/* ---------- звук костяшек ---------- */
+
+/** Синтез деревянного щелчка через Web Audio: короткий тон с падением высоты + шумовая атака. Файлы не нужны. */
+const sound = (() => {
+  let ctx = null, noise = null;
+  function ensure() {
+    if (!S.settings.sound) return null;
+    if (!ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      ctx = new AC();
+      const len = Math.floor(ctx.sampleRate * 0.025);
+      noise = ctx.createBuffer(1, len, ctx.sampleRate);
+      const d = noise.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 4);
+    }
+    if (ctx.state === 'suspended') ctx.resume();
+    return ctx;
+  }
+  function click(strength = 1, pitch = 1, delay = 0) {
+    const c = ensure();
+    if (!c) return;
+    const t = c.currentTime + delay;
+    const o = c.createOscillator();
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(1500 * pitch, t);
+    o.frequency.exponentialRampToValueAtTime(520 * pitch, t + 0.035);
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.45 * strength, t + 0.002);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
+    o.connect(g).connect(c.destination);
+    o.start(t);
+    o.stop(t + 0.08);
+    const n = c.createBufferSource();
+    n.buffer = noise;
+    const bp = c.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 2400 * pitch;
+    bp.Q.value = 1.2;
+    const ng = c.createGain();
+    ng.gain.value = 0.7 * strength;
+    n.connect(bp).connect(ng).connect(c.destination);
+    n.start(t);
+  }
+  function clack(count, toDone) {
+    const n = Math.min(count, 8);
+    for (let i = 0; i < n; i++) click(toDone ? 1 : 0.7, (toDone ? 0.8 : 1) * (1 + (Math.random() - 0.5) * 0.08), i * 0.035);
+  }
+  return { unlock: ensure, click, clack };
+})();
 
 let timerEnd = 0, timerTick = null;
 function startTimer(sec) {
