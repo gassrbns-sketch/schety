@@ -357,14 +357,14 @@ async function ghFetch(method, url, body) {
 const repoUrl = () => `https://api.github.com/repos/${encodeURIComponent(S.settings.owner)}/${encodeURIComponent(S.settings.repo)}`;
 const contentsUrl = path => `${repoUrl()}/contents/${path.split('/').map(encodeURIComponent).join('/')}`;
 
-async function ghGet(path) {
-  const r = await ghFetch('GET', `${contentsUrl(path)}?ref=${encodeURIComponent(S.settings.branch)}`);
+async function ghGet(path, ref = S.settings.branch) {
+  const r = await ghFetch('GET', `${contentsUrl(path)}?ref=${encodeURIComponent(ref)}`);
   if (r.status === 404) return null;
   if (!r.ok) throw new GhError(r.status, `GitHub ${r.status} при чтении ${path}`);
   return r.json();
 }
-async function ghGetText(path) {
-  const j = await ghGet(path);
+async function ghGetText(path, ref) {
+  const j = await ghGet(path, ref);
   if (!j) return { text: null, sha: null };
   return { text: b64decode(j.content || ''), sha: j.sha };
 }
@@ -517,8 +517,54 @@ async function syncAll() {
   if (route().name === 'list') render();
 }
 
+/**
+ * Claude Code в облаке пушит не в main, а в ветки claude/…. Планы оттуда переносим в main,
+ * каждую версию файла — один раз (по sha блоба), чтобы не затереть более поздние правки в main.
+ * Если одна дата есть в нескольких ветках, берётся ветка с самым свежим коммитом.
+ */
+async function importBranchPlans() {
+  const r = await ghFetch('GET', `${repoUrl()}/branches?per_page=100`);
+  if (!r.ok) return 0;
+  const branches = (await r.json()).filter(b => b.name.startsWith('claude/'));
+  const seen = S.meta.importedBlobs || {};
+  const byDate = new Map();
+  for (const b of branches) {
+    const list = await ghGet(PATHS.plans, b.name);
+    for (const f of Array.isArray(list) ? list : []) {
+      if (f.type !== 'file' || !/^\d{4}-\d{2}-\d{2}\.json$/.test(f.name) || seen[f.sha]) continue;
+      if (S.plans.get(f.name.slice(0, -5))?.sha === f.sha) { seen[f.sha] = Date.now(); continue; }
+      const date = f.name.slice(0, -5);
+      if (!byDate.has(date)) byDate.set(date, []);
+      byDate.get(date).push({ branch: b, file: f });
+    }
+  }
+  const commitDate = new Map();
+  const dateOf = async b => {
+    if (!commitDate.has(b.name)) {
+      const c = await ghFetch('GET', `${repoUrl()}/commits/${b.commit.sha}`);
+      commitDate.set(b.name, c.ok ? (await c.json()).commit.committer.date : '');
+    }
+    return commitDate.get(b.name);
+  };
+  let imported = 0;
+  for (const [date, cands] of byDate) {
+    for (const c of cands) c.when = await dateOf(c.branch);
+    cands.sort((a, b) => b.when.localeCompare(a.when));
+    const best = cands[0];
+    const { text } = await ghGetText(best.file.path, best.branch.name);
+    try { JSON.parse(text); } catch { cands.forEach(c => { seen[c.file.sha] = Date.now(); }); continue; }
+    await ghWrite(`${PATHS.plans}/${date}.json`, () => text, `План тренировки ${date} из ветки ${best.branch.name}`);
+    cands.forEach(c => { seen[c.file.sha] = Date.now(); });
+    imported++;
+  }
+  S.meta.importedBlobs = seen;
+  await saveMeta();
+  return imported;
+}
+
 async function pullAll() {
   if (!S.settings.token) throw new Error('Укажите токен в настройках');
+  try { await importBranchPlans(); } catch (e) { console.warn('Планы из веток claude/:', e); }
   const list = await ghGet(PATHS.plans);
   for (const f of Array.isArray(list) ? list : []) {
     if (f.type !== 'file' || !f.name.endsWith('.json')) continue;
