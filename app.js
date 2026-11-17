@@ -309,6 +309,18 @@ function upsertWorkout(md, header, body) {
   return `${before}\n\n${block}${after ? '\n' + after : ''}`;
 }
 
+/** Убрать из workouts.md блок с этим заголовком (если его нет — текст не меняется). */
+function removeWorkout(md, header) {
+  const lines = md.split('\n');
+  const at = lines.indexOf(header);
+  if (at < 0) return md;
+  let end = lines.length;
+  for (let i = at + 1; i < lines.length; i++) if (ENTRY_HEADER.test(lines[i])) { end = i; break; }
+  const before = lines.slice(0, at).join('\n').replace(/\s+$/, '');
+  const after = lines.slice(end).join('\n');
+  return `${before}\n${after ? '\n' + after : ''}`;
+}
+
 /* ---------- GitHub ---------- */
 
 const b64encode = str => {
@@ -377,7 +389,49 @@ async function ghWrite(path, makeText, message, knownSha) {
   }
 }
 
+async function ghDelete(path, message) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const j = await ghGet(path);
+    if (!j) return;                                   // уже нет
+    const r = await ghFetch('DELETE', contentsUrl(path), { message, sha: j.sha, branch: S.settings.branch });
+    if (r.ok || r.status === 404) return;
+    if (attempt > 0 || !(r.status === 409 || r.status === 422)) throw new GhError(r.status, `GitHub ${r.status} при удалении ${path}`);
+  }
+}
+
 /* ---------- синхронизация ---------- */
+
+const pendingDeletes = () => S.meta.deletes || [];
+
+/** Сброс занятия: локально — к плану (или удалить, если плана нет), в GitHub — убрать файл сессии и блок в workouts.md. */
+async function resetSession(s) {
+  const plan = s.plan_date && S.plans.get(s.plan_date);
+  if (s.status !== 'planned') {
+    S.meta.deletes = pendingDeletes().filter(d => d.id !== s.id).concat([{ id: s.id, date: s.date, md_header: s.md_header || null }]);
+    await saveMeta();
+  }
+  if (plan) {
+    const fresh = sessionFromPlan(plan);
+    fresh.id = s.id;
+    S.sessions.set(s.id, fresh);
+    await saveSession(fresh);
+  } else {
+    S.sessions.delete(s.id);
+    await db.del('session:' + s.id);
+  }
+  stopTimer();
+  syncAll();
+  return !!plan;
+}
+
+async function pushDeletes() {
+  for (const d of [...pendingDeletes()]) {
+    await ghDelete(`${PATHS.sessions}/${d.id}.json`, `Тренировка ${d.date} сброшена`);
+    if (d.md_header) await ghWrite(PATHS.workouts, old => removeWorkout(old || '', d.md_header), `Тренировка ${d.date} убрана из workouts.md`);
+    S.meta.deletes = pendingDeletes().filter(x => x !== d);
+    await saveMeta();
+  }
+}
 
 let syncTimer = null, syncing = false;
 
@@ -434,8 +488,11 @@ async function syncAll() {
   syncing = true;
   renderSync();
   let failed = null;
+  // Сначала сбросы: новое занятие с тем же id должно лечь уже после удаления старого.
+  try { await pushDeletes(); } catch (e) { failed = e; }
   for (const s of S.sessions.values()) {
     if (s.status === 'planned') continue;
+    if (failed && pendingDeletes().some(d => d.id === s.id)) continue;
     try {
       if (s.sync.dirty) await pushSession(s);
       if (s.sync.mdDirty && s.status === 'done') await pushWorkout(s);
@@ -455,7 +512,7 @@ async function syncAll() {
   await saveMeta();
   syncing = false;
   if (failed) scheduleSync(5 * 60_000);
-  else if ([...S.sessions.values()].some(s => s.sync.dirty || s.sync.mdDirty)) scheduleSync(SYNC_DELAY_MS);
+  else if (pendingDeletes().length || [...S.sessions.values()].some(s => s.sync.dirty || s.sync.mdDirty)) scheduleSync(SYNC_DELAY_MS);
   renderSync();
   if (route().name === 'list') render();
 }
@@ -503,6 +560,7 @@ async function pullAll() {
     const id = f.name.slice(0, -5);
     const local = S.sessions.get(id);
     if (local && local.status !== 'planned') continue;
+    if (pendingDeletes().some(d => d.id === id)) continue;   // сброшено, удаление ещё не дошло
     const { text } = await ghGetText(f.path);
     try {
       const data = JSON.parse(text);
@@ -550,16 +608,17 @@ const go = hash => { location.hash = hash; };
 function renderSync() {
   const el = $('#sync');
   const pending = [...S.sessions.values()].filter(s => s.status !== 'planned' && (s.sync.dirty || s.sync.mdDirty));
+  const hasPending = pending.length > 0 || pendingDeletes().length > 0;
   el.className = 'sync';
   el.onclick = null;
   if (syncing) { el.textContent = 'отправка…'; return; }
-  if (S.meta.lastError && pending.length) {
+  if (S.meta.lastError && hasPending) {
     el.textContent = 'ошибка — повторить';
     el.classList.add('err');
     el.onclick = () => syncAll();
     return;
   }
-  if (pending.length) { el.textContent = 'сохранено в телефоне'; el.onclick = () => syncAll(); return; }
+  if (hasPending) { el.textContent = 'сохранено в телефоне'; el.onclick = () => syncAll(); return; }
   if (S.meta.lastSync) { el.textContent = `отправлено в ${hhmm(new Date(S.meta.lastSync))}`; el.classList.add('ok'); return; }
   el.textContent = '';
 }
@@ -697,6 +756,9 @@ function renderSession(id) {
   } else {
     parts.push(`<button id="finish" class="primary" style="width:100%;margin-top:16px">Завершить занятие</button>`);
   }
+  if (s.status !== 'planned') {
+    parts.push(`<button id="reset" class="danger" style="width:100%;margin-top:32px">${s.plan_date && S.plans.has(s.plan_date) ? 'Сбросить к плану' : 'Удалить занятие'}</button>`);
+  }
   view.innerHTML = parts.join('');
   view.querySelectorAll('.rod').forEach(layoutRod);
   bindSession(s);
@@ -758,6 +820,16 @@ function bindSession(s) {
     catch { toast('Не удалось скопировать — выделите текст вручную'); }
   };
   if ($('#resend')) $('#resend').onclick = () => { s.sync.dirty = s.sync.mdDirty = true; saveSession(s); syncAll(); };
+  if ($('#reset')) $('#reset').onclick = async () => {
+    const toPlan = s.plan_date && S.plans.has(s.plan_date);
+    const what = toPlan
+      ? 'Сбросить занятие к плану? Все отметки и правки пропадут'
+      : 'Удалить занятие? Все отметки пропадут';
+    if (!confirm(`${what}, файл занятия в GitHub${s.md_header ? ' и запись в workouts.md' : ''} будут удалены.`)) return;
+    const kept = await resetSession(s);
+    toast(kept ? 'Занятие сброшено к плану' : 'Занятие удалено');
+    if (kept) renderSession(s.id); else go('#/');
+  };
   view.querySelectorAll('.ex-menu').forEach(b => b.onclick = () => openExMenu(s, +b.closest('.ex').dataset.i, rerender));
   view.querySelectorAll('.add-set').forEach(b => b.onclick = () => {
     const e = s.exercises[+b.closest('.ex').dataset.i];
