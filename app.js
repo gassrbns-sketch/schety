@@ -1199,31 +1199,44 @@ const sound = (() => {
     if (ctx.state === 'suspended') ctx.resume();
     return ctx;
   }
+  function noiseBand(c, t, type, f, q, vol) {
+    const n = c.createBufferSource();
+    n.buffer = noise;
+    const fl = c.createBiquadFilter();
+    fl.type = type;
+    fl.frequency.value = f;
+    fl.Q.value = q;
+    const g = c.createGain();
+    g.gain.value = vol;
+    n.connect(fl).connect(g).connect(out(c));
+    n.start(t);
+  }
+  /**
+   * Деревянная костяшка: глухой короткий «ток». Основа — шум через широкие полосы (без звенящих тонов),
+   * тело — очень короткий тон с падением высоты, всё затухает за 20–40 мс.
+   */
   function click(strength = 1, pitch = 1, delay = 0) {
     const c = ensure();
     if (!c) return;
     const t = c.currentTime + delay;
+    const f0 = 720 * pitch;
+    // Тело: короткий «ток» без звона.
     const o = c.createOscillator();
-    o.type = 'triangle';
-    o.frequency.setValueAtTime(1500 * pitch, t);
-    o.frequency.exponentialRampToValueAtTime(520 * pitch, t + 0.035);
+    o.type = 'sine';
+    o.frequency.setValueAtTime(f0 * 1.25, t);
+    o.frequency.exponentialRampToValueAtTime(f0, t + 0.012);
     const g = c.createGain();
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.45 * strength, t + 0.002);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
-    o.connect(g).connect(c.destination);
+    g.gain.exponentialRampToValueAtTime(0.6 * strength, t + 0.001);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.03);
+    o.connect(g).connect(out(c));
     o.start(t);
-    o.stop(t + 0.08);
-    const n = c.createBufferSource();
-    n.buffer = noise;
-    const bp = c.createBiquadFilter();
-    bp.type = 'bandpass';
-    bp.frequency.value = 2400 * pitch;
-    bp.Q.value = 1.2;
-    const ng = c.createGain();
-    ng.gain.value = 0.7 * strength;
-    n.connect(bp).connect(ng).connect(c.destination);
-    n.start(t);
+    o.stop(t + 0.05);
+    // Древесина: шум в двух широких полосах.
+    noiseBand(c, t, 'bandpass', f0, 3, 1.6 * strength);
+    noiseBand(c, t, 'bandpass', f0 * 2.4, 2.5, 0.9 * strength);
+    // Звонкая атака: дерево о дерево.
+    noiseBand(c, t, 'highpass', 3000, 0.7, 0.35 * strength);
   }
   let master = null;
   function out(c) {
@@ -1259,10 +1272,13 @@ const sound = (() => {
     const c = ensure();
     if (!c) return;
     const t = c.currentTime;
-    const k = Math.min(1.4, 0.9 + count * 0.1);
-    click(k, toDone ? 0.62 : 0.85);
-    click(k * 0.6, toDone ? 0.9 : 1.1, 0.012);
-    tone(c, { f: toDone ? 230 : 300, f2: toDone ? 110 : 160, t, dur: 0.14, vol: 0.35 * k, a: 0.002 });
+    const k = Math.min(1.3, 0.95 + count * 0.07);
+    const p = toDone ? 0.88 : 1.12;
+    // Плотная связка из 2–3 ударов за 20 мс: слышно как один удар ряда с деревянным перестуком.
+    click(k, p);
+    click(k * 0.7, p * 1.08, 0.009);
+    if (count >= 3) click(k * 0.5, p * 0.94, 0.019);
+    tone(c, { f: toDone ? 420 : 520, f2: toDone ? 300 : 380, t, dur: 0.06, vol: 0.18 * k, a: 0.001 });
   }
   return { unlock: ensure, click, clack };
 })();
