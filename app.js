@@ -15,7 +15,10 @@ const PATHS = {
   sessions: 'manual/sessions',
   workouts: 'manual/workouts.md',
   exercises: 'manual/exercises.json',
+  morning: 'manual/morning.csv',
 };
+// Столбцы как у бота (garmin_manual.MORNING_FIELDS): одна строка на дату, новая замещает прежнюю.
+const MORNING_FIELDS = ['date', 'weight_kg', 'readiness', 'discomfort', 'sleep_quality', 'recorded_at'];
 const SYNC_DELAY_MS = 60_000;
 const TOKEN_WARN_DAYS = 14;
 const DEFAULT_REST_S = 120;
@@ -81,6 +84,7 @@ const S = {
   plans: new Map(),         // date -> {date, sha, data}
   sessions: new Map(),      // id -> session
   catalog: { list: [], sha: null, dirty: false },
+  checkins: new Map(),      // date -> {date, weight_kg, readiness, discomfort, sleep_quality, recorded_at, dirty}
 };
 
 const clone = o => JSON.parse(JSON.stringify(o));
@@ -89,6 +93,7 @@ const saveMeta = () => db.set('meta', S.meta);
 const saveCatalog = () => db.set('catalog', S.catalog);
 const saveSession = s => db.set('session:' + s.id, s);
 const savePlan = p => db.set('plan:' + p.date, p);
+const saveCheckin = c => db.set('checkin:' + c.date, c);
 
 /* ---------- даты и форматирование ---------- */
 
@@ -481,6 +486,74 @@ async function pushCatalog() {
   await saveCatalog();
 }
 
+/* ---------- утренний чек-ин: manual/morning.csv ---------- */
+
+function parseCsv(text) {
+  const rows = [];
+  let row = [], cell = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; }
+      else cell += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { row.push(cell); cell = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(cell); rows.push(row); row = []; cell = '';
+    } else cell += c;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  return rows.filter(r => r.some(x => x !== ''));
+}
+const csvCell = v => { v = String(v ?? ''); return /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v; };
+
+function readMorning(text) {
+  const rows = parseCsv(text || '');
+  if (!rows.length) return [];
+  const head = rows[0];
+  return rows.slice(1).map(r => Object.fromEntries(head.map((h, i) => [h, r[i] ?? ''])));
+}
+function writeMorning(entries) {
+  const byDate = new Map(entries.map(e => [e.date, e]));
+  const lines = [MORNING_FIELDS.join(',')];
+  for (const d of [...byDate.keys()].sort()) lines.push(MORNING_FIELDS.map(f => csvCell(byDate.get(d)[f])).join(','));
+  return lines.join('\n') + '\n';
+}
+
+function lastWeight() {
+  const withW = [...S.checkins.values()].filter(c => c.weight_kg !== '' && c.weight_kg != null).sort((a, b) => b.date.localeCompare(a.date));
+  return withW.length ? num(withW[0].weight_kg) : null;
+}
+
+async function pushCheckins() {
+  const mine = [...S.checkins.values()].filter(c => c.dirty);
+  if (!mine.length) return;
+  const vers = new Map(mine.map(c => [c.date, c.ver]));
+  await ghWrite(PATHS.morning, old => {
+    const rows = readMorning(old);
+    for (const c of mine) rows.push(Object.fromEntries(MORNING_FIELDS.map(f => [f, c[f] ?? ''])));
+    return writeMorning(rows);   // свои строки идут последними и замещают строки с той же датой
+  }, `Чек-ин ${mine.map(c => c.date).join(', ')}`);
+  for (const c of mine) {
+    if (c.ver === vers.get(c.date)) c.dirty = false;
+    await saveCheckin(c);
+  }
+}
+
+async function pullCheckins() {
+  const { text } = await ghGetText(PATHS.morning);
+  if (text == null) return;
+  for (const r of readMorning(text)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(r.date || '')) continue;
+    const local = S.checkins.get(r.date);
+    if (local && local.dirty) continue;
+    const c = { ...Object.fromEntries(MORNING_FIELDS.map(f => [f, r[f] ?? ''])), dirty: false, ver: local?.ver || 0 };
+    S.checkins.set(c.date, c);
+    await saveCheckin(c);
+  }
+}
+
 async function syncAll() {
   clearTimeout(syncTimer);
   if (syncing) { scheduleSync(3000); return; }
@@ -507,12 +580,13 @@ async function syncAll() {
   if (S.catalog.dirty) {
     try { await pushCatalog(); } catch (e) { failed = e; }
   }
+  try { await pushCheckins(); } catch (e) { failed = e; }
   S.meta.lastError = failed ? failed.message : null;
   if (!failed) S.meta.lastSync = Date.now();
   await saveMeta();
   syncing = false;
   if (failed) scheduleSync(5 * 60_000);
-  else if (pendingDeletes().length || [...S.sessions.values()].some(s => s.sync.dirty || s.sync.mdDirty)) scheduleSync(SYNC_DELAY_MS);
+  else if (pendingDeletes().length || [...S.sessions.values()].some(s => s.sync.dirty || s.sync.mdDirty) || [...S.checkins.values()].some(c => c.dirty)) scheduleSync(SYNC_DELAY_MS);
   renderSync();
   if (route().name === 'list') render();
 }
@@ -599,6 +673,7 @@ async function pullAll() {
       } catch { /* битый справочник не мешает работе */ }
     }
   }
+  try { await pullCheckins(); } catch (e) { console.warn('morning.csv:', e); }
   // Занятия, которых нет в телефоне (например, после переустановки).
   const sess = await ghGet(PATHS.sessions);
   for (const f of Array.isArray(sess) ? sess : []) {
@@ -647,6 +722,7 @@ function route() {
   const h = location.hash.replace(/^#\/?/, '');
   if (h.startsWith('s/')) return { name: 'session', id: decodeURIComponent(h.slice(2)) };
   if (h === 'settings') return { name: 'settings' };
+  if (h === 'checkin') return { name: 'checkin' };
   return { name: 'list' };
 }
 const go = hash => { location.hash = hash; };
@@ -654,7 +730,7 @@ const go = hash => { location.hash = hash; };
 function renderSync() {
   const el = $('#sync');
   const pending = [...S.sessions.values()].filter(s => s.status !== 'planned' && (s.sync.dirty || s.sync.mdDirty));
-  const hasPending = pending.length > 0 || pendingDeletes().length > 0;
+  const hasPending = pending.length > 0 || pendingDeletes().length > 0 || [...S.checkins.values()].some(c => c.dirty);
   el.className = 'sync';
   el.onclick = null;
   if (syncing) { el.textContent = 'отправка…'; return; }
@@ -695,6 +771,7 @@ function render() {
   closeSheet();
   if (r.name === 'settings') renderSettings();
   else if (r.name === 'session') renderSession(r.id);
+  else if (r.name === 'checkin') renderCheckin();
   else renderList();
   renderSync();
   updateWakeLock();
@@ -722,7 +799,14 @@ function renderList() {
       <span class="grow"><span class="t">${dmy(x.date)}</span> <span class="muted">${esc(x.title || '')}</span></span>
       <span class="badge ${x.state.cls}">${x.state.text}</span></button>`;
 
+  const ci = S.checkins.get(today);
+  const ciText = ci
+    ? [ci.weight_kg !== '' ? `${fmtUi(ci.weight_kg)} кг` : '', ci.readiness !== '' ? `готовность ${esc(ci.readiness)}` : '', ci.sleep_quality !== '' ? `сон ${esc(ci.sleep_quality)}` : ''].filter(Boolean).join(' · ')
+    : 'вес, готовность, боли, сон';
   view.innerHTML = `${banners.join('')}
+    <button id="checkin" class="list-item">
+      <span class="grow"><span class="t">☀️ Чек-ин</span> <span class="muted">${ciText}</span></span>
+      <span class="badge ${ci ? (ci.dirty ? 'unsent' : 'done') : 'plan'}">${ci ? (ci.dirty ? 'не отправлено' : 'сделано') : 'сегодня'}</span></button>
     <div class="row">
       <button id="refresh" class="grow">Обновить</button>
       <button id="blank" class="grow">Новое занятие без плана</button>
@@ -730,7 +814,8 @@ function renderList() {
     ${ahead.length ? `<h2>Впереди</h2>${ahead.map(li).join('')}` : `<p class="muted">Планов пока нет. Claude кладёт их в <code>${PATHS.plans}/</code>.</p>`}
     ${past.length ? `<h2>Прошедшие</h2>${past.map(li).join('')}` : ''}`;
 
-  view.querySelectorAll('.list-item').forEach(b => b.onclick = () => go('#/s/' + encodeURIComponent(b.dataset.id)));
+  view.querySelectorAll('.list-item[data-id]').forEach(b => b.onclick = () => go('#/s/' + encodeURIComponent(b.dataset.id)));
+  $('#checkin').onclick = () => go('#/checkin');
   $('#refresh').onclick = async e => {
     e.target.disabled = true;
     e.target.textContent = 'Загрузка…';
@@ -745,6 +830,62 @@ function renderList() {
     scheduleSync(SYNC_DELAY_MS);
     go('#/s/' + encodeURIComponent(s.id));
     setTimeout(() => openPicker(s, null), 50);
+  };
+}
+
+/* ---------- экран чек-ина ---------- */
+
+function scale(id, label, value) {
+  const btns = Array.from({ length: 10 }, (_, i) => i + 1)
+    .map(n => `<button data-v="${n}" class="${String(value) === String(n) ? 'primary' : ''}">${n}</button>`).join('');
+  return `<label>${label}</label><div class="scale" id="${id}" data-v="${esc(value ?? '')}">${btns}</div>`;
+}
+
+function renderCheckin() {
+  const date = localDate();
+  $('#title').textContent = 'Чек-ин ' + dmy(date);
+  const c = S.checkins.get(date) || {};
+  const w = c.weight_kg !== undefined && c.weight_kg !== '' ? num(c.weight_kg) : lastWeight();
+  view.innerHTML = `
+    ${stepper('c-weight', 'Вес, кг', w, 0.1, true)}
+    ${scale('c-ready', 'Готовность', c.readiness)}
+    <label for="c-pain">Травмы, боли, дискомфорт</label>
+    <div class="row"><input id="c-pain" class="grow" value="${esc(c.discomfort ?? '')}" placeholder="нет"><button id="c-nopain">0</button></div>
+    ${scale('c-sleep', 'Качество сна', c.sleep_quality)}
+    <button id="c-save" class="primary" style="width:100%;margin-top:20px">Сохранить</button>
+    ${c.recorded_at ? `<p class="muted small">Записано ${esc(c.recorded_at.replace('T', ' '))}${c.dirty ? ', ещё не отправлено' : ''}.</p>` : ''}`;
+  view.querySelectorAll('.stepper button').forEach(b => b.onclick = () => {
+    const inp = $('#' + b.dataset.for);
+    const cur = num(inp.value.replace(',', '.')) ?? lastWeight() ?? 80;
+    inp.value = fmtUi(Math.max(0, +(cur + +b.dataset.d).toFixed(1)));
+  });
+  view.querySelectorAll('.scale').forEach(sc => sc.querySelectorAll('button').forEach(b => b.onclick = () => {
+    const same = sc.dataset.v === b.dataset.v;
+    sc.dataset.v = same ? '' : b.dataset.v;
+    sc.querySelectorAll('button').forEach(x => x.classList.toggle('primary', x.dataset.v === sc.dataset.v));
+  }));
+  $('#c-nopain').onclick = () => { $('#c-pain').value = '0'; };
+  $('#c-save').onclick = () => {
+    const raw = $('#c-weight').value.trim().replace(',', '.');
+    const wv = raw === '' ? '' : num(raw);
+    if (wv === null || (wv !== '' && wv <= 0)) { toast('Не понял вес. Число, например 82,5, или пусто.'); return; }
+    const now = new Date();
+    const entry = {
+      date,
+      weight_kg: wv === '' ? '' : fmtNum(wv),
+      readiness: $('#c-ready').dataset.v,
+      discomfort: $('#c-pain').value.trim(),
+      sleep_quality: $('#c-sleep').dataset.v,
+      recorded_at: `${date}T${hhmm(now)}`,
+      dirty: true,
+      ver: (c.ver || 0) + 1,
+    };
+    S.checkins.set(date, entry);
+    saveCheckin(entry);
+    sound.click(1, 0.8);
+    syncAll();
+    go('#/');
+    toast('Чек-ин сохранён');
   };
 }
 
@@ -1265,7 +1406,9 @@ function renderSettings() {
     <button id="s-sync" style="width:100%;margin-top:8px">Отправить всё неотправленное</button>
     <p class="muted small" style="margin-top:24px">Данные: ${esc(st.owner)}/${esc(st.repo)}, ветка ${esc(st.branch)}. Планы — <code>${PATHS.plans}/</code>, факт — <code>${PATHS.sessions}/</code>, текст — <code>${PATHS.workouts}</code>.</p>`;
   const pending = [...S.sessions.values()].filter(s => s.status !== 'planned' && (s.sync.dirty || s.sync.mdDirty));
-  $('#s-pending').textContent = pending.length ? pending.map(s => `${dmy(s.date)}${s.sync.error ? ' — ' + s.sync.error : ''}`).join(', ') : 'Всё отправлено.';
+  const pendingCi = [...S.checkins.values()].filter(c => c.dirty).map(c => `чек-ин ${dmy(c.date)}`);
+  const pendingAll = pending.map(s => `${dmy(s.date)}${s.sync.error ? ' — ' + s.sync.error : ''}`).concat(pendingCi);
+  $('#s-pending').textContent = pendingAll.length ? pendingAll.join(', ') : 'Всё отправлено.';
   const persistField = () => {
     st.token = $('#s-token').value.trim();
     st.owner = $('#s-owner').value.trim() || DEFAULTS.owner;
@@ -1446,6 +1589,7 @@ async function boot() {
   S.catalog = (await db.get('catalog')) || S.catalog;
   for (const p of await db.all('plan:')) S.plans.set(p.date, p);
   for (const s of await db.all('session:')) S.sessions.set(s.id, s);
+  for (const c of await db.all('checkin:')) S.checkins.set(c.date, c);
 
   $('#back').onclick = () => go('#/');
   $('#gear').onclick = () => go('#/settings');

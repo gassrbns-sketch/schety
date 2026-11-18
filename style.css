@@ -136,3 +136,7 @@ h2 { font-size: 15px; color: var(--muted); font-weight: 500; margin: 18px 0 8px;
 }
 .toast .grow { flex: 1; }
 pre.text { white-space: pre-wrap; background: var(--panel2); padding: 10px; border-radius: 10px; font-size: 14px; }
+
+/* чек-ин: шкала 1–10 */
+.scale { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.scale button { padding: 0; font-size: 18px; font-weight: 600; }
