@@ -1428,7 +1428,10 @@ function renderSettings() {
     st.timer = $('#s-timer').checked;
     st.sound = $('#s-sound').checked;
     st.doneSide = $('#s-side').value;
-    const tg = $('#s-tg').value.trim();
+    // Из @BotFather часто копируют вместе с текстом вокруг: берём сам токен «цифры:буквы».
+    const tgRaw = $('#s-tg').value.trim();
+    const tg = (tgRaw.match(/\d{6,}:[\w-]{35}/) || [tgRaw.replace(/\s+/g, '')])[0];
+    $('#s-tg').value = tg;
     if (tg !== st.tgToken) { st.tgToken = tg; st.tgChat = ''; }
     st.watch = $('#s-watch').checked;
     saveSettings();
@@ -1623,9 +1626,17 @@ const watch = (() => {
 
   async function api(method, params = {}) {
     const q = new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]));
-    const r = await fetch(`https://api.telegram.org/bot${S.settings.tgToken}/${method}?${q}`, { cache: 'no-store' });
+    let r;
+    try { r = await fetch(`https://api.telegram.org/bot${S.settings.tgToken}/${method}?${q}`, { cache: 'no-store' }); }
+    catch { throw new Error('Telegram: нет связи (интернет или Telegram заблокирован у оператора)'); }
     const j = await r.json().catch(() => ({}));
-    if (!j.ok) throw new Error(`Telegram: ${j.description || r.status}`);
+    if (!j.ok) {
+      const code = j.error_code || r.status;
+      const why = code === 404 || code === 401 ? 'токен бота не принят — скопируйте его из @BotFather целиком'
+        : code === 409 ? 'этот бот уже занят другой программой (бот на ПК?). Нужен отдельный новый бот'
+        : (j.description || code);
+      throw new Error(`Telegram: ${why}`);
+    }
     return j.result;
   }
   const send = (text, silent = false) => api('sendMessage', { chat_id: S.settings.tgChat, text, disable_notification: silent })
