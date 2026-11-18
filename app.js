@@ -23,6 +23,7 @@ const PATHS = {
 };
 // Столбцы как у бота (garmin_manual.MORNING_FIELDS): одна строка на дату, новая замещает прежнюю.
 const MORNING_FIELDS = ['date', 'weight_kg', 'readiness', 'discomfort', 'sleep_quality', 'recorded_at'];
+const APP_VERSION = 13;   // совпадает с CACHE в sw.js
 const SYNC_DELAY_MS = 60_000;
 const TOKEN_WARN_DAYS = 14;
 const DEFAULT_REST_S = 120;
@@ -1427,7 +1428,7 @@ function renderSettings() {
     <h2>Неотправленное</h2>
     <div id="s-pending" class="muted small"></div>
     <button id="s-sync" style="width:100%;margin-top:8px">Отправить всё неотправленное</button>
-    <p class="muted small" style="margin-top:24px">Данные: ${esc(st.owner)}/${esc(st.repo)}, ветка ${esc(st.branch)}. Планы — <code>${PATHS.plans}/</code>, факт — <code>${PATHS.sessions}/</code>, текст — <code>${PATHS.workouts}</code>.</p>`;
+    <p class="muted small" style="margin-top:24px">Данные: ${esc(st.owner)}/${esc(st.repo)}, ветка ${esc(st.branch)}. Версия приложения ${APP_VERSION}. Планы — <code>${PATHS.plans}/</code>, факт — <code>${PATHS.sessions}/</code>, текст — <code>${PATHS.workouts}</code>.</p>`;
   const pending = [...S.sessions.values()].filter(s => s.status !== 'planned' && (s.sync.dirty || s.sync.mdDirty));
   const pendingCi = [...S.checkins.values()].filter(c => c.dirty).map(c => `чек-ин ${dmy(c.date)}`);
   const pendingAll = pending.map(s => `${dmy(s.date)}${s.sync.error ? ' — ' + s.sync.error : ''}`).concat(pendingCi);
@@ -1808,7 +1809,21 @@ async function boot() {
   });
 
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) {
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloaded = false;
+    // Новая версия встала — перезагрузиться сразу, а не со следующего открытия.
+    // Посреди занятия не дёргаем: подхватится при выходе в список.
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloaded) return;
+      const reload = () => { if (!reloaded) { reloaded = true; location.reload(); } };
+      if (route().name === 'session') addEventListener('hashchange', reload, { once: true });
+      else reload();
+    });
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+      .then(reg => document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); }))
+      .catch(() => {});
+  }
 
   render();
   if (S.settings.token && navigator.onLine) {

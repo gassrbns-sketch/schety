@@ -1,10 +1,14 @@
 // Оболочка приложения работает без сети: отдаём из кэша, в фоне обновляем кэш.
 // Запросы к api.github.com не перехватываются.
-const CACHE = 'schety-v12';
+const CACHE = 'schety-v13';
 const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  // cache: 'reload' — мимо HTTP-кэша браузера: GitHub Pages разрешает держать файлы 10 минут,
+  // и без этого в новую версию попадали старые app.js/style.css.
+  e.waitUntil(caches.open(CACHE)
+    .then(c => c.addAll(ASSETS.map(u => new Request(u, { cache: 'reload' }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', e => {
@@ -22,7 +26,7 @@ self.addEventListener('fetch', e => {
   const key = req.mode === 'navigate' ? 'index.html' : req;
   e.respondWith(caches.open(CACHE).then(async cache => {
     const cached = await cache.match(key, { ignoreSearch: true });
-    const network = fetch(req).then(res => {
+    const network = fetch(req, { cache: 'no-cache' }).then(res => {
       if (res.ok) cache.put(key, res.clone());
       return res;
     }).catch(() => null);
