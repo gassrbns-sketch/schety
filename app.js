@@ -23,7 +23,7 @@ const PATHS = {
 };
 // Столбцы как у бота (garmin_manual.MORNING_FIELDS): одна строка на дату, новая замещает прежнюю.
 const MORNING_FIELDS = ['date', 'weight_kg', 'readiness', 'discomfort', 'sleep_quality', 'recorded_at'];
-const APP_VERSION = 13;   // совпадает с CACHE в sw.js
+const APP_VERSION = 14;   // совпадает с CACHE в sw.js
 const SYNC_DELAY_MS = 60_000;
 const TOKEN_WARN_DAYS = 14;
 const DEFAULT_REST_S = 120;
@@ -607,7 +607,8 @@ async function syncAll() {
 async function importBranchPlans() {
   const r = await ghFetch('GET', `${repoUrl()}/branches?per_page=100`);
   if (!r.ok) return 0;
-  const branches = (await r.json()).filter(b => b.name.startsWith('claude/'));
+  // Claude Code называет ветки по-разному: claude/… или ccr-… (облачная сессия из приложения Claude).
+  const branches = (await r.json()).filter(b => /^(claude\/|ccr-)/.test(b.name));
   const seen = S.meta.importedBlobs || {};
   const byDate = new Map();
   for (const b of branches) {
@@ -648,6 +649,18 @@ async function pullAll() {
   if (!S.settings.token) throw new Error('Укажите токен в настройках');
   try { await importBranchPlans(); } catch (e) { console.warn('Планы из веток claude/:', e); }
   const list = await ghGet(PATHS.plans);
+  // Планы, которых больше нет в GitHub (удалены или перенесены на другой день), убираем из телефона.
+  // Начатое занятие по такому плану остаётся — факт важнее.
+  if (Array.isArray(list) || list === null) {
+    const remote = new Set((list || []).filter(f => f.type === 'file').map(f => f.name.replace(/\.json$/, '')));
+    for (const date of [...S.plans.keys()]) {
+      if (remote.has(date)) continue;
+      S.plans.delete(date);
+      await db.del('plan:' + date);
+      const s = S.sessions.get(date);
+      if (s && s.status === 'planned') { S.sessions.delete(date); await db.del('session:' + date); }
+    }
+  }
   for (const f of Array.isArray(list) ? list : []) {
     if (f.type !== 'file' || !f.name.endsWith('.json')) continue;
     const date = f.name.slice(0, -5);
