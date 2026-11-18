@@ -1,6 +1,6 @@
 // Оболочка приложения работает без сети: отдаём из кэша, в фоне обновляем кэш.
 // Запросы к api.github.com не перехватываются.
-const CACHE = 'schety-v11';
+const CACHE = 'schety-v12';
 const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {

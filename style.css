@@ -140,3 +140,6 @@ pre.text { white-space: pre-wrap; background: var(--panel2); padding: 10px; bord
 /* чек-ин: шкала 1–10 */
 .scale { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
 .scale button { padding: 0; font-size: 18px; font-weight: 600; }
+
+/* ссылка в виде кнопки (бот на ПК) */
+a.btn { display: flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 14px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--line); color: var(--text); text-decoration: none; }
