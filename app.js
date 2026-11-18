@@ -19,6 +19,7 @@ const PATHS = {
   workouts: 'manual/workouts.md',
   exercises: 'manual/exercises.json',
   morning: 'manual/morning.csv',
+  requests: 'manual/requests',   // запросы к боту на ПК: синхронизация Garmin, план на часы
 };
 // Столбцы как у бота (garmin_manual.MORNING_FIELDS): одна строка на дату, новая замещает прежнюю.
 const MORNING_FIELDS = ['date', 'weight_kg', 'readiness', 'discomfort', 'sleep_quality', 'recorded_at'];
@@ -557,6 +558,71 @@ async function pullCheckins() {
   }
 }
 
+/* ---------- запросы к ПК: бот забирает файл из manual/requests, выполняет и пишет ответ туда же ---------- */
+
+const PC = (() => {
+  const POLL_MS = 10_000, SLOW_MS = 3 * 60_000, GIVE_UP_MS = 30 * 60_000;
+  const LABEL = { sync: 'Обновление Garmin', push_plan: 'Тренировка на часы' };
+  let timer = null;
+  const list = () => S.meta.pcReqs || [];
+
+  async function request(cmd, extra = {}) {
+    if (!S.settings.token) { toast('Нет токена GitHub'); return; }
+    if (list().some(r => r.cmd === cmd && !r.done)) { toast(`${LABEL[cmd]}: уже ждём ответ ПК`); return; }
+    const now = new Date();
+    const id = `${localDate(now)}_${hhmm(now).replace(':', '')}${pad(now.getSeconds())}_${cmd}`;
+    const body = { id, cmd, ...extra, status: 'pending', requested_at: localIso(now) };
+    try {
+      await ghPut(`${PATHS.requests}/${id}.json`, JSON.stringify(body, null, 2) + '\n', null, `Запрос из Счётов: ${cmd}`);
+    } catch (e) { toast(`${LABEL[cmd]}: ${e.message}`); return; }
+    S.meta.pcReqs = list().concat([{ id, cmd, at: Date.now(), done: false, slowShown: false }]);
+    await saveMeta();
+    toast(`${LABEL[cmd]}: запрос отправлен на ПК`);
+    if (route().name === 'list') render();
+    schedule(POLL_MS);
+  }
+
+  function schedule(ms) { clearTimeout(timer); timer = setTimeout(check, ms); }
+
+  async function check() {
+    const open = list().filter(r => !r.done);
+    if (!open.length || !S.settings.token || !navigator.onLine) { if (open.length) schedule(POLL_MS * 3); return; }
+    for (const r of open) {
+      let j = null;
+      try { const { text } = await ghGetText(`${PATHS.requests}/${r.id}.json`); j = text && JSON.parse(text); } catch { /* повторим */ }
+      if (j && j.status !== 'pending') {
+        r.done = true;
+        r.status = j.status;
+        r.message = j.message;
+        toast(`${j.status === 'done' ? '✓' : '✗'} ${j.message}`, null, null, 10000);
+        if (r.cmd === 'sync' && j.status === 'done') pullAll().catch(() => {});
+      } else if (Date.now() - r.at > GIVE_UP_MS) {
+        r.done = true;
+        r.status = 'timeout';
+        r.message = 'ПК не ответил за 30 мин. Запрос выполнится, когда бот на ПК запустится; ответ придёт в Telegram.';
+      } else if (!r.slowShown && Date.now() - r.at > SLOW_MS) {
+        r.slowShown = true;
+        toast(`${LABEL[r.cmd]}: ПК пока не ответил — он включён и бот запущен?`, null, null, 8000);
+      }
+    }
+    S.meta.pcReqs = list().filter(r => !r.done || Date.now() - r.at < 86_400_000).slice(-10);
+    await saveMeta();
+    if (route().name === 'list') render();
+    if (list().some(r => !r.done)) schedule(POLL_MS);
+  }
+
+  /** Строка для списка: последний запрос и его состояние. */
+  function status() {
+    const r = list()[list().length - 1];
+    if (!r) return '';
+    const t = hhmm(new Date(r.at));
+    if (!r.done) return `${LABEL[r.cmd]} (${t}): ждём ПК…`;
+    return `${LABEL[r.cmd]} (${t}): ${r.status === 'done' ? '✓' : '✗'} ${r.message || ''}`;
+  }
+
+  return { request, check, status, LABEL };
+})();
+
 async function syncAll() {
   clearTimeout(syncTimer);
   if (syncing) { scheduleSync(3000); return; }
@@ -814,11 +880,14 @@ function renderList() {
       <button id="refresh" class="grow">Обновить</button>
       <button id="blank" class="grow">Новое занятие без плана</button>
     </div>
+    <button id="garmin-sync" style="width:100%;margin-top:8px">⌚ Обновить данные Garmin (через ПК)</button>
+    ${PC.status() ? `<div class="muted small" style="margin-top:6px">${esc(PC.status())}</div>` : ''}
     ${ahead.length ? `<h2>Впереди</h2>${ahead.map(li).join('')}` : `<p class="muted">Планов пока нет. Claude кладёт их в <code>${PATHS.plans}/</code>.</p>`}
     ${past.length ? `<h2>Прошедшие</h2>${past.map(li).join('')}` : ''}`;
 
   view.querySelectorAll('.list-item[data-id]').forEach(b => b.onclick = () => go('#/s/' + encodeURIComponent(b.dataset.id)));
   $('#checkin').onclick = () => go('#/checkin');
+  $('#garmin-sync').onclick = () => PC.request('sync');
   $('#refresh').onclick = async e => {
     e.target.disabled = true;
     e.target.textContent = 'Загрузка…';
@@ -946,6 +1015,9 @@ function renderSession(id) {
   } else {
     parts.push(`<button id="finish" class="primary" style="width:100%;margin-top:16px">Завершить занятие</button>`);
   }
+  if (s.status !== 'done' && s.plan_date && S.plans.has(s.plan_date)) {
+    parts.push(`<button id="to-watch" style="width:100%;margin-top:8px">⌚ Тренировка на часы Garmin (через ПК)</button>`);
+  }
   if (s.status !== 'planned') {
     parts.push(`<button id="reset" class="danger" style="width:100%;margin-top:32px">${s.plan_date && S.plans.has(s.plan_date) ? 'Сбросить к плану' : 'Удалить занятие'}</button>`);
   }
@@ -1006,6 +1078,7 @@ function bindSession(s) {
   $('#add-ex').onclick = () => openPicker(s, null);
   $('#snote').onchange = e => { s.session_note = e.target.value; touch(s); };
   if ($('#finish')) $('#finish').onclick = () => finishSession(s);
+  if ($('#to-watch')) $('#to-watch').onclick = () => PC.request('push_plan', { date: s.plan_date });
   if ($('#copy')) $('#copy').onclick = async () => {
     try { await navigator.clipboard.writeText(buildText(s)); toast('Текст скопирован'); }
     catch { toast('Не удалось скопировать — выделите текст вручную'); }
@@ -1804,6 +1877,7 @@ async function boot() {
     await syncAll();
     if (route().name !== 'session') render();
   }
+  PC.check();   // дождаться ответов на запросы, отправленные до перезапуска
 }
 
 boot();
