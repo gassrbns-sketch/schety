@@ -23,7 +23,7 @@ const PATHS = {
 };
 // Столбцы как у бота (garmin_manual.MORNING_FIELDS): одна строка на дату, новая замещает прежнюю.
 const MORNING_FIELDS = ['date', 'weight_kg', 'readiness', 'discomfort', 'sleep_quality', 'recorded_at'];
-const APP_VERSION = 15;   // совпадает с CACHE в sw.js
+const APP_VERSION = 16;   // совпадает с CACHE в sw.js
 const SYNC_DELAY_MS = 60_000;
 const TOKEN_WARN_DAYS = 14;
 const DEFAULT_REST_S = 120;
@@ -1248,8 +1248,10 @@ function openSetEditor(s, e, k, rerender) {
       return nf;
     };
     const apply = done => {
-      const oldW = f.weight;
+      const old = set.fact;
       set.fact = read();
+      // Изменённые вес/повторы/секунды сразу переходят на все следующие несделанные подходы.
+      const changed = ['weight', 'reps', 'sec'].filter(key => key in set.fact && set.fact[key] !== old[key]);
       set.note = sh.querySelector('#f-note').value.trim();
       if (done !== undefined) {
         // Отметка держит порядок счётов: сделанные — сплошной ряд с начала.
@@ -1261,17 +1263,21 @@ function openSetEditor(s, e, k, rerender) {
           sound.click(1, 0.8);
         }
       }
+      const later = changed.length ? e.sets.filter((x, j) => j > k && !x.done) : [];
+      const backup = later.map(x => x.fact);
+      later.forEach(x => {
+        x.fact = { ...x.fact };
+        for (const key of changed) x.fact[key] = set.fact[key];
+      });
       touch(s);
       closeSheet();
       rerender();
-      const later = e.sets.filter((x, j) => j > k && !x.done);
-      if ('weight' in set.fact && set.fact.weight !== oldW && later.length) {
-        const w = set.fact.weight;
-        toast(`Поставить ${signed(w).replace(/^\+/, '')} кг на следующие подходы (${later.length})?`, 'Перенести', () => {
-          later.forEach(x => { x.fact.weight = w; });
+      if (later.length) {
+        toast(`Так же в следующих подходах: ${later.length}`, 'Отменить', () => {
+          later.forEach((x, j) => { if (!x.done) x.fact = backup[j]; });
           touch(s);
           rerender();
-        }, 8000);
+        }, 6000);
       }
     };
     sh.querySelector('#f-save').onclick = () => apply();
