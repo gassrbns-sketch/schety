@@ -23,7 +23,7 @@ const PATHS = {
 };
 // Столбцы как у бота (garmin_manual.MORNING_FIELDS): одна строка на дату, новая замещает прежнюю.
 const MORNING_FIELDS = ['date', 'weight_kg', 'readiness', 'discomfort', 'sleep_quality', 'recorded_at'];
-const APP_VERSION = 14;   // совпадает с CACHE в sw.js
+const APP_VERSION = 15;   // совпадает с CACHE в sw.js
 const SYNC_DELAY_MS = 60_000;
 const TOKEN_WARN_DAYS = 14;
 const DEFAULT_REST_S = 120;
@@ -432,6 +432,19 @@ async function resetSession(s) {
   stopTimer();
   syncAll();
   return !!plan;
+}
+
+// План удаляется сразу в GitHub (без очереди): иначе следующее «Обновить» вернуло бы его.
+async function deletePlan(date) {
+  if (!S.settings.token) throw new Error('Укажите токен в настройках');
+  const plan = S.plans.get(date);
+  await ghDelete(`${PATHS.plans}/${date}.json`, `План ${date} удалён`);
+  // Тот же файл может лежать в ветке claude/… или ccr-… — не импортировать его снова.
+  if (plan?.sha) { S.meta.importedBlobs = { ...(S.meta.importedBlobs || {}), [plan.sha]: Date.now() }; await saveMeta(); }
+  S.plans.delete(date);
+  await db.del('plan:' + date);
+  const s = S.sessions.get(date);
+  if (s && s.status === 'planned') { S.sessions.delete(date); await db.del('session:' + date); }
 }
 
 async function pushDeletes() {
@@ -968,6 +981,9 @@ function renderSession(id) {
   if (S.settings.pcBot && s.status !== 'done' && s.plan_date && S.plans.has(s.plan_date)) {
     parts.push(`<a class="btn" href="${pcLink('push_' + s.plan_date)}" style="margin-top:8px">⌚ Тренировка на часы Garmin (бот на ПК)</a>`);
   }
+  if (s.status === 'planned' && s.plan_date && S.plans.has(s.plan_date)) {
+    parts.push(`<button id="delplan" class="danger" style="width:100%;margin-top:32px">Удалить план</button>`);
+  }
   if (s.status !== 'planned') {
     parts.push(`<button id="reset" class="danger" style="width:100%;margin-top:32px">${s.plan_date && S.plans.has(s.plan_date) ? 'Сбросить к плану' : 'Удалить занятие'}</button>`);
   }
@@ -1033,6 +1049,14 @@ function bindSession(s) {
     catch { toast('Не удалось скопировать — выделите текст вручную'); }
   };
   if ($('#resend')) $('#resend').onclick = () => { s.sync.dirty = s.sync.mdDirty = true; saveSession(s); syncAll(); };
+  if ($('#delplan')) $('#delplan').onclick = async () => {
+    if (!confirm(`Удалить план на ${s.plan_date.slice(8, 10)}.${s.plan_date.slice(5, 7)}? Файл плана в GitHub будет удалён.`)) return;
+    try {
+      await deletePlan(s.plan_date);
+      toast('План удалён');
+      go('#/');
+    } catch (e) { toast('Не удалось: ' + e.message); }
+  };
   if ($('#reset')) $('#reset').onclick = async () => {
     const toPlan = s.plan_date && S.plans.has(s.plan_date);
     const what = toPlan
