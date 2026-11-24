@@ -9,9 +9,6 @@ const DEFAULTS = {
   timer: false,
   doneSide: 'left',      // куда сдвигаются сделанные подходы
   sound: true,           // деревянный щелчок костяшек
-  tgToken: '',           // отдельный бот Telegram для часов
-  tgChat: '',            // чат, куда слать сигналы (берётся из /start)
-  watch: false,          // сигналы на часы включены
   pcBot: '',             // имя бота на ПК (хранится только в телефоне): /run и план на часы по ссылке t.me/<бот>?start=…
 };
 const PATHS = {
@@ -23,7 +20,7 @@ const PATHS = {
 };
 // Столбцы как у бота (garmin_manual.MORNING_FIELDS): одна строка на дату, новая замещает прежнюю.
 const MORNING_FIELDS = ['date', 'weight_kg', 'readiness', 'discomfort', 'sleep_quality', 'recorded_at'];
-const APP_VERSION = 16;   // совпадает с CACHE в sw.js
+const APP_VERSION = 17;   // совпадает с CACHE в sw.js
 const SYNC_DELAY_MS = 60_000;
 const TOKEN_WARN_DAYS = 14;
 const DEFAULT_REST_S = 120;
@@ -1038,8 +1035,7 @@ function layoutRod(rod) {
 
 function bindSession(s) {
   const rerender = () => { const y = scrollY; renderSession(s.id); scrollTo(0, y); };
-  $('#start') && ($('#start').onclick = () => { startIfNeeded(s); touch(s); rerender(); watch.signalNext(s); });
-  watch.poll();
+  $('#start') && ($('#start').onclick = () => { startIfNeeded(s); touch(s); rerender(); });
   $('#apply-plan') && ($('#apply-plan').onclick = () => { applyPlanUpdate(s); rerender(); });
   $('#add-ex').onclick = () => openPicker(s, null);
   $('#snote').onchange = e => { s.session_note = e.target.value; touch(s); };
@@ -1086,7 +1082,6 @@ function finishSession(s) {
   s.finished_at = localIso(now);
   s.md_header = s.md_header || `## ${s.date} ${hhmm(now)}`;
   stopTimer();
-  watch.cancel();
   touch(s);
   syncAll();
   renderSession(s.id);
@@ -1458,13 +1453,6 @@ function renderSettings() {
     <label class="row" style="color:var(--text)"><input id="s-sound" type="checkbox" style="width:24px;min-height:24px" ${st.sound ? 'checked' : ''}> Звук костяшек</label>
     <label for="s-side">Сделанные подходы сдвигаются</label>
     <select id="s-side"><option value="left" ${st.doneSide !== 'right' ? 'selected' : ''}>влево (свайп справа налево)</option><option value="right" ${st.doneSide === 'right' ? 'selected' : ''}>вправо (свайп слева направо)</option></select>
-    <h2>Часы (Telegram)</h2>
-    <div class="muted small">Отдельный бот от @BotFather. Приложение шлёт «▶ подход» по окончании отдыха, ответ с часов отмечает подход.</div>
-    <label for="s-tg">Токен бота</label>
-    <input id="s-tg" type="password" value="${esc(st.tgToken)}" autocomplete="off" placeholder="123456:ABC…">
-    <label class="row" style="color:var(--text);margin-top:12px"><input id="s-watch" type="checkbox" style="width:24px;min-height:24px" ${st.watch ? 'checked' : ''}> Сигналы на часы</label>
-    <div class="row" style="margin-top:8px"><button id="s-link" class="grow">Привязать</button><button id="s-ping" class="grow">Проверить сигнал</button></div>
-    <div id="s-tgres" class="muted small" style="margin-top:6px">${st.tgChat ? 'Чат привязан.' : 'Напишите своему боту /start, затем «Привязать».'}</div>
     <h2>Бот на ПК</h2>
     <label for="s-pcbot">Имя бота (без @) — для кнопок «Обновить данные Garmin» и «Тренировка на часы»</label>
     <input id="s-pcbot" value="${esc(st.pcBot)}" autocomplete="off" placeholder="имя_бота">
@@ -1483,37 +1471,10 @@ function renderSettings() {
     st.timer = $('#s-timer').checked;
     st.sound = $('#s-sound').checked;
     st.doneSide = $('#s-side').value;
-    // Из @BotFather часто копируют вместе с текстом вокруг: берём сам токен «цифры:буквы».
-    const tgRaw = $('#s-tg').value.trim();
-    const tg = (tgRaw.match(/\d{6,}:[\w-]{35}/) || [tgRaw.replace(/\s+/g, '')])[0];
-    $('#s-tg').value = tg;
-    if (tg !== st.tgToken) { st.tgToken = tg; st.tgChat = ''; }
-    st.watch = $('#s-watch').checked;
     st.pcBot = $('#s-pcbot').value.trim().replace(/^@/, '').replace(/^https?:\/\/t\.me\//, '');
     saveSettings();
   };
-  ['#s-token', '#s-owner', '#s-repo', '#s-timer', '#s-sound', '#s-side', '#s-tg', '#s-watch', '#s-pcbot'].forEach(id => $(id).onchange = persistField);
-  $('#s-link').onclick = async () => {
-    persistField();
-    const out = $('#s-tgres');
-    if (!st.tgToken) { out.textContent = 'Вставьте токен бота.'; return; }
-    out.textContent = 'Ищу сообщение…';
-    try {
-      const r = await watch.link();
-      out.textContent = r.chat ? `Привязано к @${r.bot}. Сообщение отправлено.` : `Бот @${r.bot} не видит сообщений. Напишите ему /start и нажмите ещё раз.`;
-      if (r.chat && !st.watch) { st.watch = $('#s-watch').checked = true; saveSettings(); }
-    } catch (e) { out.textContent = 'Ошибка: ' + e.message; }
-  };
-  $('#s-ping').onclick = async () => {
-    persistField();
-    const out = $('#s-tgres');
-    if (!st.tgToken || !st.tgChat) { out.textContent = 'Сначала «Привязать».'; return; }
-    try {
-      await fetch(`https://api.telegram.org/bot${st.tgToken}/sendMessage?` + new URLSearchParams({ chat_id: st.tgChat, text: '▶ Проверка: Жим лёжа 82,5×5 · 1/4 · RIR 2' }))
-        .then(r => r.json()).then(j => { if (!j.ok) throw new Error(j.description); });
-      out.textContent = 'Отправлено — часы должны завибрировать.';
-    } catch (e) { out.textContent = 'Ошибка: ' + e.message; }
-  };
+  ['#s-token', '#s-owner', '#s-repo', '#s-timer', '#s-sound', '#s-side', '#s-pcbot'].forEach(id => $(id).onchange = persistField);
   $('#s-sound').addEventListener('change', () => { if (st.sound) sound.clack(3, true); });
   $('#s-show').onclick = () => { const t = $('#s-token'); t.type = t.type === 'password' ? 'text' : 'password'; };
   $('#s-sync').onclick = () => { persistField(); syncAll(); };
@@ -1662,160 +1623,10 @@ function stopTimer() { clearInterval(timerTick); $('#timer').hidden = true; }
 $('#timer-add').onclick = () => { timerEnd += 30_000; drawTimer(); };
 $('#timer-stop').onclick = stopTimer;
 
-/* ---------- часы через Telegram ---------- */
-
-/** После отметки подхода: таймер отдыха на экране и сигнал на часы по окончании отдыха. */
+/** После отметки подхода — таймер отдыха. */
 function afterSetDone(s, e) {
-  const rest = e.rest_s || DEFAULT_REST_S;
-  if (S.settings.timer) startTimer(rest);
-  watch.schedule(s, rest);
+  if (S.settings.timer) startTimer(e.rest_s || DEFAULT_REST_S);
 }
-
-/**
- * Отдельный бот: приложение шлёт «пора делать подход» по окончании отдыха, часы показывают уведомление,
- * ответ с часов (быстрый ответ Garmin) приложение забирает через getUpdates и отмечает подход.
- * Только GET с параметрами: на CORS-preflight api.telegram.org отвечает 501.
- */
-const watch = (() => {
-  let restTimer = null, polling = false;
-  const on = () => S.settings.watch && S.settings.tgToken && S.settings.tgChat;
-
-  async function api(method, params = {}) {
-    const q = new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]));
-    let r;
-    try { r = await fetch(`https://api.telegram.org/bot${S.settings.tgToken}/${method}?${q}`, { cache: 'no-store' }); }
-    catch { throw new Error('Telegram: нет связи (интернет или Telegram заблокирован у оператора)'); }
-    const j = await r.json().catch(() => ({}));
-    if (!j.ok) {
-      const code = j.error_code || r.status;
-      const why = code === 404 || code === 401 ? 'токен бота не принят — скопируйте его из @BotFather целиком'
-        : code === 409 ? 'этот бот уже занят другой программой (бот на ПК?). Нужен отдельный новый бот'
-        : (j.description || code);
-      throw new Error(`Telegram: ${why}`);
-    }
-    return j.result;
-  }
-  const send = (text, silent = false) => api('sendMessage', { chat_id: S.settings.tgChat, text, disable_notification: silent })
-    .catch(e => toast(e.message));
-
-  /** Следующий подход: первое упражнение с несделанным; в круговом блоке — по кругам. */
-  function nextSet(s) {
-    const ex = s.exercises.filter(e => e.origin !== 'removed');
-    const first = ex.find(e => e.sets.some(x => !x.done));
-    if (!first) return null;
-    let e = first;
-    if (first.circuit) {
-      const group = ex.filter(x => x.circuit === first.circuit && x.sets.some(y => !y.done));
-      const doneCnt = x => x.sets.filter(y => y.done).length;
-      e = group.reduce((a, b) => doneCnt(b) < doneCnt(a) ? b : a);
-    }
-    return { e, k: e.sets.findIndex(x => !x.done) };
-  }
-  function describe(e, k) {
-    const set = e.sets[k];
-    const rir = set.plan?.rir ?? set.fact?.rir;
-    return `${e.name} ${setLabel(e.type, set.fact, e.per_side)} · ${k + 1}/${e.sets.length}${rir != null ? ` · RIR ${rir}` : ''}`;
-  }
-
-  function signalNext(s) {
-    if (!on() || s.status === 'done') return;
-    const n = nextSet(s);
-    send(n ? `▶ ${describe(n.e, n.k)}` : '🏁 Все подходы сделаны. Завершите занятие в приложении.');
-  }
-  function schedule(s, sec) {
-    clearTimeout(restTimer);
-    if (!on()) return;
-    restTimer = setTimeout(() => signalNext(s), sec * 1000);
-    poll();
-  }
-  const cancel = () => clearTimeout(restTimer);
-
-  const rest = sec => `${Math.floor(sec / 60)}:${pad(sec % 60)}`;
-  /** Ответ с часов → действие над следующим подходом текущего занятия. */
-  function handle(s, raw) {
-    const t = raw.trim().toLowerCase().replace(/[−–—]/g, '-');
-    const n = nextSet(s);
-    if (/^(стоп|пауза|stop)/.test(t)) { cancel(); send('⏸ Сигналы на паузе до следующей отметки', true); return; }
-    if (/^(что|\?|next|дальше)/.test(t)) { send(n ? `▶ ${describe(n.e, n.k)}` : '🏁 Всё сделано', true); return; }
-    if (!n) { send('🏁 Все подходы уже сделаны', true); return; }
-    const { e, k } = n, set = e.sets[k];
-    const repsKey = e.type === 'time' ? 'sec' : 'reps';
-    let note = '';
-    if (/^(пропуск|skip)/.test(t)) {
-      e.sets.splice(k, 1);
-      startIfNeeded(s);
-      touch(s);
-      refresh(s);
-      send(`⏭ Пропущен: ${e.name} ${k + 1}`, true);
-      signalNext(s);
-      return;
-    }
-    let m;
-    if ((m = t.match(/^-(\d+)$/))) set.fact[repsKey] = Math.max(0, (set.fact[repsKey] || 0) - +m[1]);
-    else if ((m = t.match(/^(\d+)$/))) set.fact[repsKey] = +m[1];
-    else if (/^(тяжело|легко)/.test(t)) note = t.startsWith('т') ? 'тяжело' : 'легко';
-    else if (!/^(\+|✅|👍|✔|ок|ok|да|yes|сделал|сделано|готово|done)/.test(t)) {
-      send('Не понял. Ответы: + (сделал) · -1 / -2 · число повторов · тяжело · легко · пропуск · стоп', true);
-      return;
-    }
-    if (note) set.note = set.note ? `${set.note}; ${note}` : note;
-    set.done = true;
-    startIfNeeded(s);
-    sound.clack(1, true);
-    touch(s);
-    refresh(s);
-    const sec = e.rest_s || DEFAULT_REST_S;
-    afterSetDone(s, e);
-    const nx = nextSet(s);
-    send(`✓ ${e.name} ${setLabel(e.type, set.fact, e.per_side)} (${k + 1}/${e.sets.length})` +
-      (nx ? ` · отдых ${rest(sec)}` : ' · это был последний'), true);
-    if (!nx) { cancel(); signalNext(s); }
-  }
-  function refresh(s) {
-    if (route().name === 'session' && current === s) { const y = scrollY; renderSession(s.id); scrollTo(0, y); }
-  }
-
-  /** Долгий опрос getUpdates, пока открыто незавершённое занятие. */
-  async function poll() {
-    if (polling || !on()) return;
-    polling = true;
-    try {
-      while (on() && route().name === 'session' && current && current.status !== 'done') {
-        let ups;
-        try {
-          ups = await api('getUpdates', { offset: S.meta.tgOffset || 0, timeout: 20, allowed_updates: '["message"]' });
-        } catch (e) {
-          await new Promise(z => setTimeout(z, 5000));
-          continue;
-        }
-        for (const u of ups) {
-          S.meta.tgOffset = u.update_id + 1;
-          const msg = u.message;
-          if (!msg || String(msg.chat.id) !== String(S.settings.tgChat) || !msg.text) continue;
-          if (Date.now() / 1000 - msg.date > 600) continue;   // старьё, пришедшее до занятия
-          if (current && current.status !== 'done') handle(current, msg.text);
-        }
-        if (ups.length) saveMeta();
-      }
-    } finally { polling = false; }
-  }
-
-  /** Привязка: пользователь пишет боту /start, приложение берёт чат из последнего сообщения. */
-  async function link() {
-    const me = await api('getMe');
-    const ups = await api('getUpdates', { offset: S.meta.tgOffset || 0, timeout: 0 });
-    const msgs = ups.map(u => u.message).filter(Boolean);
-    if (ups.length) { S.meta.tgOffset = ups[ups.length - 1].update_id + 1; saveMeta(); }
-    const last = msgs[msgs.length - 1];
-    if (!last) return { bot: me.username, chat: null };
-    S.settings.tgChat = String(last.chat.id);
-    saveSettings();
-    await api('sendMessage', { chat_id: S.settings.tgChat, text: 'Счёты подключены. На сигнал «▶ подход» отвечайте с часов: + (сделал), -1 / -2, число повторов, тяжело, легко, пропуск, стоп.' });
-    return { bot: me.username, chat: S.settings.tgChat };
-  }
-
-  return { signalNext, schedule, cancel, poll, link, handle, nextSet, describe };
-})();
 
 let wakeLock = null;
 async function updateWakeLock() {
@@ -1835,6 +1646,11 @@ async function updateWakeLock() {
 
 async function boot() {
   Object.assign(S.settings, (await db.get('settings')) || {});
+  // Сигналы на часы через Telegram убраны (v17): токен бота больше не храним.
+  if ('tgToken' in S.settings || 'tgChat' in S.settings || 'watch' in S.settings) {
+    delete S.settings.tgToken; delete S.settings.tgChat; delete S.settings.watch; delete S.meta.tgOffset;
+    await saveSettings();
+  }
   S.meta = (await db.get('meta')) || {};
   S.catalog = (await db.get('catalog')) || S.catalog;
   for (const p of await db.all('plan:')) S.plans.set(p.date, p);
