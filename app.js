@@ -20,7 +20,7 @@ const PATHS = {
 };
 // Столбцы как у бота (garmin_manual.MORNING_FIELDS): одна строка на дату, новая замещает прежнюю.
 const MORNING_FIELDS = ['date', 'weight_kg', 'readiness', 'discomfort', 'sleep_quality', 'recorded_at'];
-const APP_VERSION = 18;   // совпадает с CACHE в sw.js
+const APP_VERSION = 19;   // совпадает с CACHE в sw.js
 const PAST_SHOWN = 5;     // прошедших занятий в списке; остальные — под «Ещё прошедшие»
 const SYNC_DELAY_MS = 60_000;
 const TOKEN_WARN_DAYS = 14;
@@ -960,6 +960,7 @@ function renderSession(id) {
   const parts = [];
   if (s.plan_update) parts.push(`<div class="banner">План обновлён Claude. <button id="apply-plan" class="primary">Применить к невыполненным подходам</button></div>`);
   if (s.note) parts.push(`<div class="banner">${esc(s.note)}</div>`);
+  parts.push(progressBar(s));
   if (s.status === 'planned') parts.push(`<button id="start" class="primary" style="width:100%;margin-bottom:12px">Начать занятие</button>`);
   let prevCircuit = null;
   s.exercises.forEach((e, i) => {
@@ -990,6 +991,28 @@ function renderSession(id) {
   view.querySelectorAll('.rod').forEach(layoutRod);
   bindSession(s);
 }
+
+/** Время с начала занятия (до завершения — идёт) и доля сделанных подходов по всем упражнениям. */
+function elapsedText(s) {
+  if (!s.started_at) return '0:00';
+  const end = s.finished_at ? Date.parse(s.finished_at) : Date.now();
+  const sec = Math.max(0, Math.round((end - Date.parse(s.started_at)) / 1000));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60);
+  return h ? `${h}:${pad(m)}:${pad(sec % 60)}` : `${m}:${pad(sec % 60)}`;
+}
+function progressBar(s) {
+  const sets = s.exercises.filter(e => e.origin !== 'removed').flatMap(e => e.sets);
+  const done = sets.filter(x => x.done).length;
+  const pct = sets.length ? Math.round(done / sets.length * 100) : 0;
+  return `<div class="progress">
+    <div class="row small"><span class="grow">⏱ <b id="elapsed">${elapsedText(s)}</b></span><span>${done} из ${sets.length} ${plural(sets.length, 'подхода', 'подходов', 'подходов')} · ${pct}%</span></div>
+    <div class="bar"><div style="width:${pct}%"></div></div></div>`;
+}
+// Тикаем только числом на экране, без перерисовки занятия.
+setInterval(() => {
+  const el = document.getElementById('elapsed');
+  if (el && current && current.status === 'in_progress') el.textContent = elapsedText(current);
+}, 1000);
 
 function exCard(e, i) {
   const removed = e.origin === 'removed';
