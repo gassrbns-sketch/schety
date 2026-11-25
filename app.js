@@ -20,7 +20,8 @@ const PATHS = {
 };
 // Столбцы как у бота (garmin_manual.MORNING_FIELDS): одна строка на дату, новая замещает прежнюю.
 const MORNING_FIELDS = ['date', 'weight_kg', 'readiness', 'discomfort', 'sleep_quality', 'recorded_at'];
-const APP_VERSION = 17;   // совпадает с CACHE в sw.js
+const APP_VERSION = 18;   // совпадает с CACHE в sw.js
+const PAST_SHOWN = 5;     // прошедших занятий в списке; остальные — под «Ещё прошедшие»
 const SYNC_DELAY_MS = 60_000;
 const TOKEN_WARN_DAYS = 14;
 const DEFAULT_REST_S = 120;
@@ -844,7 +845,8 @@ function renderList() {
     </div>
     ${S.settings.pcBot ? `<a class="btn" href="${pcLink('run')}" style="margin-top:8px">⌚ Обновить данные Garmin (бот на ПК)</a>` : ''}
     ${ahead.length ? `<h2>Впереди</h2>${ahead.map(li).join('')}` : `<p class="muted">Планов пока нет. Claude кладёт их в <code>${PATHS.plans}/</code>.</p>`}
-    ${past.length ? `<h2>Прошедшие</h2>${past.map(li).join('')}` : ''}`;
+    ${past.length ? `<h2>Прошедшие</h2>${past.slice(0, PAST_SHOWN).map(li).join('')}` : ''}
+    ${past.length > PAST_SHOWN ? `<details class="more"><summary>Ещё прошедшие: ${past.length - PAST_SHOWN}</summary>${past.slice(PAST_SHOWN).map(li).join('')}</details>` : ''}`;
 
   view.querySelectorAll('.list-item[data-id]').forEach(b => b.onclick = () => go('#/s/' + encodeURIComponent(b.dataset.id)));
   $('#checkin').onclick = () => go('#/checkin');

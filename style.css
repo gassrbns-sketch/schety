@@ -143,3 +143,10 @@ pre.text { white-space: pre-wrap; background: var(--panel2); padding: 10px; bord
 
 /* ссылка в виде кнопки (бот на ПК) */
 a.btn { display: flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 14px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--line); color: var(--text); text-decoration: none; }
+
+/* Старые прошедшие занятия — свёрнуты под «Ещё прошедшие» */
+details.more { margin-top: 8px; }
+details.more > summary { cursor: pointer; padding: 12px 4px; color: var(--muted); list-style: none; }
+details.more > summary::-webkit-details-marker { display: none; }
+details.more > summary::before { content: '▸ '; }
+details.more[open] > summary::before { content: '▾ '; }
