@@ -20,7 +20,7 @@ const PATHS = {
 };
 // Столбцы как у бота (garmin_manual.MORNING_FIELDS): одна строка на дату, новая замещает прежнюю.
 const MORNING_FIELDS = ['date', 'weight_kg', 'readiness', 'discomfort', 'sleep_quality', 'recorded_at'];
-const APP_VERSION = 19;   // совпадает с CACHE в sw.js
+const APP_VERSION = 20;   // совпадает с CACHE в sw.js
 const PAST_SHOWN = 5;     // прошедших занятий в списке; остальные — под «Ещё прошедшие»
 const SYNC_DELAY_MS = 60_000;
 const TOKEN_WARN_DAYS = 14;
@@ -958,9 +958,9 @@ function renderSession(id) {
   current = s;
   $('#title').textContent = `${dmy(s.date)} ${s.title || ''}`;
   const parts = [];
+  parts.push(progressBar(s));
   if (s.plan_update) parts.push(`<div class="banner">План обновлён Claude. <button id="apply-plan" class="primary">Применить к невыполненным подходам</button></div>`);
   if (s.note) parts.push(`<div class="banner">${esc(s.note)}</div>`);
-  parts.push(progressBar(s));
   if (s.status === 'planned') parts.push(`<button id="start" class="primary" style="width:100%;margin-bottom:12px">Начать занятие</button>`);
   let prevCircuit = null;
   s.exercises.forEach((e, i) => {
@@ -1008,6 +1008,8 @@ function progressBar(s) {
     <div class="row small"><span class="grow">⏱ <b id="elapsed">${elapsedText(s)}</b></span><span>${done} из ${sets.length} ${plural(sets.length, 'подхода', 'подходов', 'подходов')} · ${pct}%</span></div>
     <div class="bar"><div style="width:${pct}%"></div></div></div>`;
 }
+// Блок времени и прогресса прилипает под шапкой; её высота зависит от выреза экрана и шрифта.
+new ResizeObserver(() => document.documentElement.style.setProperty('--top-h', $('#top').offsetHeight + 'px')).observe($('#top'));
 // Тикаем только числом на экране, без перерисовки занятия.
 setInterval(() => {
   const el = document.getElementById('elapsed');
